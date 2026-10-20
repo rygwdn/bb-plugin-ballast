@@ -39,6 +39,7 @@ import {
 import { sampleMemory, type RateCursor } from "./lib/memory";
 import { DEFAULT_THRESHOLDS, evaluatePressure, usedFraction } from "./lib/pressure";
 import { groupByThread, groupConsumers, readProcesses, totalsByKind } from "./lib/procs";
+import { attributeThreads, readAgentThreads } from "./lib/attribution";
 import { applyRelief, buildPlan, type RelieveConfig } from "./lib/relieve";
 import { Store, MIGRATIONS } from "./lib/store";
 import { cadenceMs, parseLines, parsePorts } from "./lib/policy";
@@ -360,20 +361,6 @@ export default async function plugin(bb: BbPluginApi) {
     return threadCache;
   }
 
-  /** Attach a thread id to rows whose argv did not carry one but whose cwd path does. */
-  function attributeByPath(
-    rows: ProcessRow[],
-    pathsByThread: Array<{ threadId: string; path: string }>,
-  ): ProcessRow[] {
-    if (pathsByThread.length === 0) return rows;
-    // Longest path first: a nested worktree must win over its parent.
-    const sorted = [...pathsByThread].sort((a, b) => b.path.length - a.path.length);
-    return rows.map((row) => {
-      if (row.threadId !== null) return row;
-      const match = sorted.find((entry) => row.command.includes(entry.path));
-      return match === undefined ? row : { ...row, threadId: match.threadId };
-    });
-  }
 
   /**
    * Ballast's own process tree: this process and its ancestors, and nothing else.
@@ -438,7 +425,7 @@ export default async function plugin(bb: BbPluginApi) {
         readProcesses(),
         readThreadTitles(),
       ]);
-      const rows = attributeByPath(rawRows, pathsByThread);
+      const rows = attributeThreads(rawRows, pathsByThread, await readAgentThreads(rawRows));
       const consumers = groupConsumers(rows, titles);
       const value: Snapshot = {
         pressure,

@@ -36,8 +36,23 @@ never raises the level — pages parked there since yesterday cost nothing.
 
 ## Memory by thread
 
-Processes are matched to BB threads through worktree paths and argv, so the
-panel can say
+Processes are matched to BB threads using the agent's `BB_THREAD_ID`
+environment variable, explicit thread IDs in argv, and unambiguous workspace
+paths. Identity propagates down the process tree, stopping at shared BB
+infrastructure. This supports `omp acp` agents and service-installed BB as well
+as the desktop app. Shared checkout paths alone never select an arbitrary
+thread. If macOS denies access to an agent's environment, argv/path evidence
+is still used; otherwise that process remains unattributed. Environment
+values other than `BB_THREAD_ID` are not retained or reported.
+
+The session worker that hosts an agent inherits that agent's thread, because
+it exists to serve that one session. The rule is narrow on purpose: a parent
+is charged to a thread only when it has exactly one agent child and that
+child's thread is known. BB's shared server and host daemon own many sessions
+and stay unattributed, so a machine running one thread is never told that the
+whole of BB belongs to it.
+
+The panel can say
 
 ```
 1.49 GB  Fleet8 w3 — e2e inventory to COGS     3 processes

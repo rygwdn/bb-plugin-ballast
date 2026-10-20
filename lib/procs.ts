@@ -80,7 +80,7 @@ export function isAutomationBrowser(command: string): boolean {
 }
 
 const AGENT_PATTERNS =
-  /(claude-code|@anthropic-ai\/claude-code|\bcodex\b|opencode|cursor-agent|amp\b|\bgemini-cli\b|aider)/i;
+  /(claude-code|@anthropic-ai\/claude-code|\bcodex\b|opencode|cursor-agent|amp\b|\bgemini-cli\b|aider|\bomp\s+acp\b)/i;
 const DEV_SERVER_PATTERNS =
   /(next-server|next(-router-worker)?\s+dev|\bvite\b|webpack(-dev-server)?|nodemon|ng serve|rails server|\bdjango\b.*runserver)/i;
 const TEST_RUNNER_PATTERNS =
@@ -101,7 +101,19 @@ const INTERACTIVE_BROWSER_PATTERNS =
  * `bb` is outside the killable set. The plugin would have looked like it was
  * working and quietly refused to reclaim anything.
  */
-const BB_PATTERNS = /(bb\.app[\\/]Contents|\bbb Helper\b|bb-app[\\/]server[\\/]dist)/;
+const BB_PATTERNS =
+  /(bb\.app[\\/]Contents|\bbb Helper\b|bb-app[\\/](server[\\/]dist|host-daemon[\\/]dist|dist[\\/]bb-app\.js))/;
+/**
+ * BB infrastructure that serves every thread at once.
+ *
+ * These are the processes that must never be charged to a single thread, no
+ * matter what the topology looks like when the table is read: the server
+ * itself, the launcher, the desktop app, and the plugin host worker. The
+ * per-session bridge worker is deliberately *not* here — it exists to serve
+ * one agent, and that agent's thread is the only thread it serves.
+ */
+export const SHARED_BB_PATTERN =
+  /(bb\.app[\\/]Contents|bb-app[\\/]server[\\/]dist|bb-app[\\/]dist[\\/]bb-app\.js|bb-plugin-host-worker\.mjs)/;
 /**
  * Processes owned by the OS. Matching here is a refusal, not a label: nothing
  * classified `system` is ever offered as a candidate, so a false positive
@@ -144,10 +156,15 @@ const TOOL_SERVICE_PATTERNS =
 export function classify(command: string, name: string): ProcessKind {
   if (SYSTEM_PATTERNS.test(name)) return "system";
   if (INTERPRETER_NAMES.test(name)) return "other";
-  if (TOOL_SERVICE_PATTERNS.test(command)) return "other";
   if (isAutomationBrowser(command)) return "browser-automation";
+  // BB is checked before the generic tool-service rule on purpose. The BB
+  // service launcher carries `--host-daemon-port`, which the daemon pattern
+  // matches, so a launcher that classified as a tool service came back as
+  // generic `other` and merged with every other BB-owned process into one
+  // unattributed blob. BB's own processes are `bb` whatever their flags say.
   if (BB_PATTERNS.test(command)) return "bb";
   if (AGENT_PATTERNS.test(command)) return "agent";
+  if (TOOL_SERVICE_PATTERNS.test(command)) return "other";
   if (CONTAINER_PATTERNS.test(command)) return "container";
   if (EDITOR_PATTERNS.test(command)) return "editor";
   if (DEV_SERVER_PATTERNS.test(command)) return "dev-server";
@@ -233,6 +250,7 @@ export function groupConsumers(
     for (;;) {
       const parent = byPid.get(current.ppid);
       if (parent === undefined || parent.pid <= 1 || seen.has(parent.pid)) return current;
+      if (parent.threadId !== current.threadId) return current;
       if (parent.kind === "system" || parent.kind === "bb" || parent.kind === "agent") {
         return current;
       }
@@ -302,6 +320,9 @@ function describe(root: ProcessRow, memberCount: number): string {
   if (root.kind === "test-runner") return `Test runner${suffix}`;
   if (root.kind === "toolchain") return `${root.name} (build)${suffix}`;
   if (root.kind === "agent") return `Agent: ${root.name}${suffix}`;
+  // BB's own processes are shared infrastructure, not the user's work. Saying
+  // "node" made them look like an unexplained leak.
+  if (root.kind === "bb") return `BB service${suffix}`;
   return `${root.name}${suffix}`;
 }
 
